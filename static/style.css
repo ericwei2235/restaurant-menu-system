@@ -1,0 +1,91 @@
+body {
+    background-color: #faf6f0;
+    font-family: Arial, Helvetica, sans-serif;
+    color: #3a2e2e;
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 0 20px 40px;
+}
+
+header {
+    text-align: center;
+    padding: 30px 0 20px;
+    border-bottom: 3px solid #b3272d;
+    margin-bottom: 20px;
+}
+
+header h1 {
+    color: #b3272d;
+    margin: 0;
+    font-size: 2.2em;
+}
+
+.tagline {
+    margin: 4px 0 0;
+    font-style: italic;
+    color: #6b5a5a;
+}
+
+section {
+    margin-bottom: 30px;
+}
+
+section h3 {
+    color: #b3272d;
+    border-bottom: 1px solid #d9c7c7;
+    padding-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.menu-item {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    background-color: #fffaf3;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.item-name {
+    font-weight: bold;
+    flex: 0 0 auto;
+}
+
+.item-description {
+    color: #6b5a5a;
+    font-size: 0.9em;
+    flex: 1 1 auto;
+}
+
+.item-price {
+    font-weight: bold;
+    color: #b3272d;
+    white-space: nowrap;
+}
+
+.item-sizes {
+    display: flex;
+    gap: 14px;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    font-weight: bold;
+    color: #b3272d;
+    white-space: nowrap;
+}
+
+footer {
+    text-align: center;
+    padding-top: 20px;
+    border-top: 1px solid #d9c7c7;
+    color: #6b5a5a;
+    font-size: 0.9em;
+}
