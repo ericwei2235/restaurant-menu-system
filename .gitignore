@@ -6,3 +6,4 @@ instance/
 .env
 restaurant-app-plan.md
 design-decisions.md
+.claude/
