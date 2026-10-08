@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}Orders | China Chef Admin{% endblock %}
+
+{% block head %}
+<!-- Reload the page every 30 seconds so new orders show up on their own -->
+<meta http-equiv="refresh" content="30">
+{% endblock %}
+
+{% block content %}
+
+<!-- A macro is a reusable piece of template, like a function, used for both pending and completed orders -->
+{% macro order_card(order) %}
+<article class="order-card {{ order.status }}">
+    <div class="order-header">
+        <span class="order-number">#{{ order.id }}</span>
+        <span class="order-time">{{ order.time }}</span>
+    </div>
+
+    <p class="order-customer">
+        <strong>{{ order.customer_name }}</strong>
+        <!-- tel: links let staff tap the number to call it from a phone -->
+        {% if order.customer_phone %} &middot; <a href="tel:{{ order.customer_phone }}">{{ order.customer_phone }}</a>{% endif %}
+    </p>
+
+    <ul class="order-lines">
+        {% for line in order.lines %}
+        <li>
+            <span>{{ line.quantity }} &times; {{ line.name }}{% if line.size %} ({{ line.size }}){% endif %}</span>
+            <span>${{ line.line_total }}</span>
+        </li>
+        {% endfor %}
+    </ul>
+
+    <div class="order-footer">
+        <strong>Total: ${{ order.total }}</strong>
+        {% if order.status == "pending" %}
+        <!-- A small form per order: pressing the button sends a POST to mark just this order complete -->
+        <form method="POST" action="{{ url_for('complete_order', order_id=order.id) }}">
+            <button type="submit">Mark complete</button>
+        </form>
+        {% else %}
+        <span class="status-badge">Completed</span>
+        {% endif %}
+    </div>
+</article>
+{% endmacro %}
+
+<section>
+    <h3>Pending orders ({{ pending|length }})</h3>
+    {% for order in pending %}
+        {{ order_card(order) }}
+    {% else %}
+        {# A for loop's else branch runs only when the list is empty #}
+        <p class="empty">No pending orders.</p>
+    {% endfor %}
+</section>
+
+<section>
+    <h3>Recently completed</h3>
+    {% for order in completed %}
+        {{ order_card(order) }}
+    {% else %}
+        <p class="empty">No completed orders yet.</p>
+    {% endfor %}
+</section>
+
+{% endblock %}

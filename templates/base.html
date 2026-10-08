@@ -8,6 +8,8 @@
         <title>{% block title %}China Chef{% endblock %}</title>
         <!-- url_for builds the correct /static/... path no matter which page is loading it -->
         <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+        <!-- Lets a page add extra tags to <head>, like the admin page's auto-refresh -->
+        {% block head %}{% endblock %}
     </head>
 
     <body>

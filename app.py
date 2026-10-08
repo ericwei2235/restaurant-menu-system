@@ -1,5 +1,10 @@
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, Response, render_template, request, redirect, url_for
+from datetime import datetime, timezone
+from functools import wraps
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 import os
+import secrets
 import sqlite3
 
 
@@ -15,6 +20,12 @@ MAX_QUANTITY = 20
 MAX_NAME_LENGTH = 100
 MAX_PHONE_LENGTH = 30
 
+# The restaurant is in Aurora, IL, so admin times are shown in Central time
+RESTAURANT_TIMEZONE = ZoneInfo("America/Chicago")
+
+# How many recently completed orders the admin page shows
+COMPLETED_ORDERS_SHOWN = 20
+
 
 def get_db_connection():
     # Open a connection with dictionary-style rows and foreign key enforcement turned on
@@ -28,6 +39,27 @@ def get_db_connection():
 def format_price(cents):
     # Convert an integer number of cents (e.g. 375) into a dollar string (e.g. "3.75")
     return f"{cents / 100:.2f}"
+
+
+def format_order_time(created_at):
+    # SQLite's CURRENT_TIMESTAMP is stored as UTC text like "2026-10-08 18:30:00"
+    utc_time = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    # Convert to the restaurant's local time, e.g. "Oct 08, 01:30 PM"
+    return utc_time.astimezone(RESTAURANT_TIMEZONE).strftime("%b %d, %I:%M %p")
+
+
+def build_line(row):
+    # Turn one ordered item (name, size_label, price, quantity) into a display-ready line
+    # Returns the line and its total in cents, so callers can add up the order total exactly
+    line_cents = row["price"] * row["quantity"]
+    line = {
+        "name": row["name"],
+        "size": row["size_label"],
+        "quantity": row["quantity"],
+        "unit_price": format_price(row["price"]),
+        "line_total": format_price(line_cents),
+    }
+    return line, line_cents
 
 
 def get_menu():
@@ -172,17 +204,128 @@ def confirmation(order_id):
 
     for row in rows:
         # Do all math in integer cents, then format to dollars only for display
-        line_cents = row["price"] * row["quantity"]
+        line, line_cents = build_line(row)
+        lines.append(line)
         total_cents += line_cents
-        lines.append({
-            "name": row["name"],
-            "size": row["size_label"],
-            "quantity": row["quantity"],
-            "unit_price": format_price(row["price"]),
-            "line_total": format_price(line_cents),
-        })
 
     return render_template("confirmation.html", order=order, lines=lines, total=format_price(total_cents))
+
+
+# ---------- Admin ----------
+
+def admin_credentials_valid(auth):
+    # The password lives in an environment variable, never in the code (which is public on GitHub)
+    expected_password = os.environ.get("ADMIN_PASSWORD")
+    expected_username = os.environ.get("ADMIN_USERNAME", "admin")
+
+    # No login info sent, or no password configured on the server
+    if auth is None or not expected_password:
+        return False
+
+    # compare_digest takes the same time whether the first or last character is wrong,
+    # so an attacker can't guess the password one character at a time by timing responses
+    username_ok = secrets.compare_digest((auth.username or "").encode(), expected_username.encode())
+    password_ok = secrets.compare_digest((auth.password or "").encode(), expected_password.encode())
+    return username_ok and password_ok
+
+
+def require_admin(view):
+    # A decorator: wraps a route so the login check runs before the route's own code
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+        # Fail closed: if no password is configured, the admin page is off rather than open to everyone
+        if not os.environ.get("ADMIN_PASSWORD"):
+            return render_template("error.html", message="The admin page is disabled because no admin password is set."), 503
+
+        if not admin_credentials_valid(request.authorization):
+            # 401 plus this header makes the browser show its built-in username/password popup
+            return Response("Login required.", 401, {"WWW-Authenticate": 'Basic realm="China Chef Admin"'})
+
+        return view(*args, **kwargs)
+
+    return wrapped_view
+
+
+def is_same_origin_request():
+    # Browsers send the admin password automatically, even on requests another website triggers.
+    # Checking where the request came from blocks other sites from submitting forms to our admin routes
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    if not source:
+        return False
+    return urlparse(source).netloc == request.host
+
+
+@app.route("/admin")
+@require_admin
+def admin():
+    conn = get_db_connection()
+
+    # One query for every order and its items, newest orders first, items in the order they were added
+    rows = conn.execute(
+        """
+        SELECT o.id AS order_id, o.customer_name, o.customer_phone, o.created_at, o.status,
+               m.name, p.size_label, p.price, oi.quantity
+        FROM orders o
+        JOIN order_items oi ON oi.order_id = o.id
+        JOIN menu_item_prices p ON p.id = oi.menu_item_price_id
+        JOIN menu_items m ON m.id = p.menu_item_id
+        ORDER BY o.id DESC, oi.id
+        """
+    ).fetchall()
+    conn.close()
+
+    orders = []
+
+    for row in rows:
+        line, line_cents = build_line(row)
+
+        # Same grouping idea as get_menu(): rows for one order are next to each other thanks to ORDER BY
+        if orders and orders[-1]["id"] == row["order_id"]:
+            # Same order as the last row, so just add this item to it
+            orders[-1]["lines"].append(line)
+            orders[-1]["total_cents"] += line_cents
+        else:
+            # First row of a new order
+            orders.append({
+                "id": row["order_id"],
+                "customer_name": row["customer_name"],
+                "customer_phone": row["customer_phone"],
+                "time": format_order_time(row["created_at"]),
+                "status": row["status"],
+                "lines": [line],
+                "total_cents": line_cents,
+            })
+
+    # Convert each order total to dollars once all its items have been added
+    for order in orders:
+        order["total"] = format_price(order["total_cents"])
+
+    # Pending orders oldest first, like a queue; completed orders newest first, only the most recent few
+    pending = [order for order in orders if order["status"] == "pending"]
+    pending.reverse()
+    completed = [order for order in orders if order["status"] == "completed"][:COMPLETED_ORDERS_SHOWN]
+
+    return render_template("admin.html", pending=pending, completed=completed)
+
+
+@app.route("/admin/orders/<int:order_id>/complete", methods=["POST"])
+@require_admin
+def complete_order(order_id):
+    # Reject the request if it was submitted from some other website
+    if not is_same_origin_request():
+        return render_template("error.html", message="That request came from somewhere unexpected and was blocked."), 403
+
+    conn = get_db_connection()
+    with conn:
+        # Only pending orders can be completed; completing one twice does nothing
+        conn.execute(
+            "UPDATE orders SET status = 'completed' WHERE id = ? AND status = 'pending'",
+            (order_id,),
+        )
+    conn.close()
+
+    # Post/Redirect/Get again, so refreshing the admin page doesn't resend the button press
+    return redirect(url_for("admin"))
 
 
 if __name__ == "__main__":
