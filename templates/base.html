@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <!-- Makes the page scale properly on phones instead of showing a zoomed-out desktop view -->
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <!-- Each page can replace this block with its own title -->
+        <title>{% block title %}China Chef{% endblock %}</title>
+        <!-- url_for builds the correct /static/... path no matter which page is loading it -->
+        <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    </head>
+
+    <body>
+
+        <!-- Warns visitors this is a portfolio demo so nobody thinks they placed a real order -->
+        <p class="demo-banner">Demo project &mdash; orders placed here are not sent to the restaurant.</p>
+
+        <header>
+            <h1><a href="{{ url_for('home') }}">China Chef</a></h1>
+            <p class="tagline">Authentic Chinese-American Cuisine</p>
+        </header>
+
+        <main>
+            <!-- Each page fills in this block with its own content -->
+            {% block content %}{% endblock %}
+        </main>
+
+        <footer>
+            <p>364 W Indian Trail Rd</p>
+        </footer>
+    </body>
+</html>

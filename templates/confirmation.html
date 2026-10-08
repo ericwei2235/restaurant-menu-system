@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}Order #{{ order.id }} | China Chef{% endblock %}
+
+{% block content %}
+
+<section class="confirmation">
+    <h2>Thanks, {{ order.customer_name }}!</h2>
+    <p>Your order number is <strong>#{{ order.id }}</strong>.</p>
+
+    <!-- One row per item ordered, plus the order total at the bottom -->
+    <table class="order-table">
+        <thead>
+            <tr>
+                <th>Item</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>Total</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for line in lines %}
+            <tr>
+                <!-- Only show the size if the item has one (single-price items have none) -->
+                <td>{{ line.name }}{% if line.size %} ({{ line.size }}){% endif %}</td>
+                <td>{{ line.quantity }}</td>
+                <td>${{ line.unit_price }}</td>
+                <td>${{ line.line_total }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr>
+                <td colspan="3">Order total</td>
+                <td>${{ total }}</td>
+            </tr>
+        </tfoot>
+    </table>
+
+    <p><a class="button-link" href="{{ url_for('home') }}">Back to menu</a></p>
+</section>
+
+{% endblock %}

@@ -1,10 +1,22 @@
+/* ---------- Page basics ---------- */
+
 body {
     background-color: #faf6f0;
     font-family: Arial, Helvetica, sans-serif;
     color: #3a2e2e;
-    max-width: 700px;
+    max-width: 760px;
     margin: 0 auto;
     padding: 0 20px 40px;
+}
+
+.demo-banner {
+    margin: 0;
+    padding: 8px 12px;
+    background-color: #fff1c2;
+    border-bottom: 1px solid #e6cf7a;
+    color: #6b5420;
+    font-size: 0.85em;
+    text-align: center;
 }
 
 header {
@@ -15,9 +27,14 @@ header {
 }
 
 header h1 {
-    color: #b3272d;
     margin: 0;
     font-size: 2.2em;
+}
+
+/* The restaurant name links home, but should still look like a title */
+header h1 a {
+    color: #b3272d;
+    text-decoration: none;
 }
 
 .tagline {
@@ -44,10 +61,13 @@ ul {
     padding: 0;
 }
 
+/* ---------- Menu items ---------- */
+
 .menu-item {
     display: flex;
-    align-items: baseline;
-    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
     background-color: #fffaf3;
     padding: 10px 14px;
     margin-bottom: 8px;
@@ -55,15 +75,40 @@ ul {
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
+/* Name on top, description underneath, taking up the remaining width */
+.item-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 .item-name {
     font-weight: bold;
-    flex: 0 0 auto;
 }
 
 .item-description {
     color: #6b5a5a;
     font-size: 0.9em;
-    flex: 1 1 auto;
+}
+
+/* Prices and quantity boxes, lined up on the right */
+.item-options {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px 14px;
+    /* Allowed to shrink, so options wrap onto a second line instead of overflowing the page */
+    flex: 0 1 auto;
+}
+
+/* Clicking anywhere on a price focuses its quantity box */
+.option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
 }
 
 .item-price {
@@ -72,15 +117,98 @@ ul {
     white-space: nowrap;
 }
 
-.item-sizes {
-    display: flex;
-    gap: 14px;
-    flex: 1 1 auto;
-    justify-content: flex-end;
-    font-weight: bold;
-    color: #b3272d;
-    white-space: nowrap;
+.qty {
+    width: 3.2em;
+    padding: 4px;
+    border: 1px solid #d9c7c7;
+    border-radius: 4px;
+    font-size: 0.95em;
+    text-align: center;
 }
+
+/* ---------- Customer info form ---------- */
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 14px;
+}
+
+.field label {
+    font-weight: bold;
+}
+
+.optional {
+    font-weight: normal;
+    color: #6b5a5a;
+    font-size: 0.9em;
+}
+
+.field input {
+    padding: 8px 10px;
+    border: 1px solid #d9c7c7;
+    border-radius: 4px;
+    font-size: 1em;
+}
+
+button,
+.button-link {
+    display: inline-block;
+    background-color: #b3272d;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 20px;
+    font-size: 1em;
+    font-weight: bold;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+button:hover,
+.button-link:hover {
+    background-color: #8f1e23;
+}
+
+/* ---------- Confirmation and error pages ---------- */
+
+.confirmation h2,
+.error-page h2 {
+    color: #b3272d;
+}
+
+.hint {
+    color: #6b5a5a;
+    font-size: 0.9em;
+}
+
+.order-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0 24px;
+    background-color: #fffaf3;
+}
+
+.order-table th,
+.order-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #ecdede;
+    text-align: left;
+}
+
+/* Right-align the number columns so prices line up */
+.order-table th:not(:first-child),
+.order-table td:not(:first-child) {
+    text-align: right;
+}
+
+.order-table tfoot td {
+    font-weight: bold;
+    border-bottom: none;
+}
+
+/* ---------- Footer ---------- */
 
 footer {
     text-align: center;
@@ -88,4 +216,18 @@ footer {
     border-top: 1px solid #d9c7c7;
     color: #6b5a5a;
     font-size: 0.9em;
+}
+
+/* ---------- Small screens ---------- */
+
+@media (max-width: 640px) {
+    /* Stack the description above the prices instead of squeezing them side by side */
+    .menu-item {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .item-options {
+        justify-content: flex-start;
+    }
 }

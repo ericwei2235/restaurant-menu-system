@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}Something went wrong | China Chef{% endblock %}
+
+{% block content %}
+
+<section class="error-page">
+    <h2>Sorry!</h2>
+    <p>{{ message }}</p>
+    {% if back_hint %}
+    <!-- Only for order form errors: the browser's Back button keeps the quantities already entered -->
+    <p class="hint">Use your browser's Back button to fix your order, or return to the menu.</p>
+    {% endif %}
+    <p><a class="button-link" href="{{ url_for('home') }}">Back to menu</a></p>
+</section>
+
+{% endblock %}

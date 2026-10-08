@@ -1,47 +1,65 @@
-<!DOCTYPE html>
-<html>
-    <head>
-        <meta charset="UTF-8">
-        <title>China Chef</title>
-        <link rel="stylesheet" href="../static/style.css">
-    </head>
+{% extends "base.html" %}
 
-    <body>
+{% block content %}
 
-        <header>
-            <h1>China Chef</h1>
-            <p class="tagline">Authentic Chinese-American Cuisine</p>
-        </header>
+<form method="POST" action="{{ url_for('place_order') }}">
 
-        <main>
+    {% for category, items in menu.items() %}
+    <section>
+        <h3>{{ category }}</h3>
+        <ul>
+            {% for item in items %}
+            <li class="menu-item">
+                <div class="item-info">
+                    <span class="item-name">{{ item.name }}</span>
+                    <span class="item-description">{{ item.description }}</span>
+                </div>
 
-            {% for category, items in menu.items() %}
-            <section>
-                <h3>{{ category }}</h3>
-                <ul>
-                    {% for item in items %}
-                    <li class="menu-item">
-                        <span class="item-name">{{ item.name }}</span>
-                        <span class="item-description">{{ item.description }}</span>
-                        {% if item.prices|length == 1 %}
+                {% if item.prices|length == 1 %}
+                <!-- Single-price item: one price and one quantity box -->
+                <div class="item-options">
+                    <label class="option">
                         <span class="item-price">${{ item.prices[0].price }}</span>
-                        {% else %}
-                        <ul class="item-sizes">
-                            {% for p in item.prices %}
-                            <li>{{ p.label }} - ${{ p.price }}</li>
-                            {% endfor %}
-                        </ul>
-                        {% endif %}
+                        <input class="qty" type="number" name="qty_{{ item.prices[0].id }}" min="0" max="20" value="0"
+                               aria-label="Quantity of {{ item.name }}">
+                    </label>
+                </div>
+                {% else %}
+                <!-- Multi-size item: one price and one quantity box per size -->
+                <ul class="item-options">
+                    {% for p in item.prices %}
+                    <li>
+                        <label class="option">
+                            <span class="item-price">{{ p.label }} ${{ p.price }}</span>
+                            <input class="qty" type="number" name="qty_{{ p.id }}" min="0" max="20" value="0"
+                                   aria-label="Quantity of {{ item.name }}, {{ p.label }}">
+                        </label>
                     </li>
                     {% endfor %}
                 </ul>
-        </section>
-        {% endfor %}
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
+    {% endfor %}
 
-        </main>
+    <section class="customer-info">
+        <h3>Your Info</h3>
+        <!--Name and phone input-->
+        <div class="field">
+            <label for="name">Name</label>
+            <input type="text" name="name" id="name" placeholder="Enter your name" maxlength="100" required>
+        </div>
 
-        <footer>
-            <p>364 W Indian Trail Rd</p>
-        </footer>
-    </body>
-</html>
+        <div class="field">
+            <label for="phone">Phone Number <span class="optional">(optional)</span></label>
+            <input type="tel" name="phone" id="phone" placeholder="(630) 555-1234" maxlength="30">
+        </div>
+
+        <button type="submit">Place Order</button>
+    </section>
+
+</form>
+
+{% endblock %}
