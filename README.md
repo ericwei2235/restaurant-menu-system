@@ -106,6 +106,15 @@ Then open http://127.0.0.1:5000 for the menu, or http://127.0.0.1:5000/admin for
 
 To reset all data, stop the app, delete `restaurant.db`, and run `python init_db.py` again.
 
+## Running tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The 48 tests use a fresh temporary database for every test, so they never touch `restaurant.db`. They cover the menu, placing orders, input validation (including SQL injection and price IDs that don't exist), transaction rollback, admin login, and the cross-site request check.
+
 ## Project structure
 
 ```
@@ -114,6 +123,9 @@ init_db.py          Builds restaurant.db from the SQL files
 schema.sql          Table definitions
 seed.sql            Menu items and prices
 requirements.txt    Python dependencies
+requirements-dev.txt  Extra development dependencies (pytest)
+pytest.ini          Test settings
+tests/              Automated tests
 templates/
   base.html         Shared layout (header, footer, stylesheet)
   menu.html         Menu and order form

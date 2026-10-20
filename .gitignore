@@ -7,3 +7,4 @@ instance/
 restaurant-app-plan.md
 design-decisions.md
 .claude/
+.pytest_cache/
