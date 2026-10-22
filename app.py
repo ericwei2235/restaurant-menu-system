@@ -23,6 +23,9 @@ MAX_PHONE_LENGTH = 30
 # The restaurant is in Aurora, IL, so admin times are shown in Central time
 RESTAURANT_TIMEZONE = ZoneInfo("America/Chicago")
 
+# Random bytes in each order's confirmation-link token (16 bytes = 128 bits, about 22 characters)
+ORDER_TOKEN_BYTES = 16
+
 # How many recently completed orders the admin page shows
 COMPLETED_ORDERS_SHOWN = 20
 
@@ -141,14 +144,18 @@ def place_order():
     if not items:
         return order_error("Please choose at least one item before placing your order.")
 
+    # A long random string that identifies this order in its confirmation link.
+    # Order ids count up 1, 2, 3..., so using them in links would let anyone view other people's orders
+    public_token = secrets.token_urlsafe(ORDER_TOKEN_BYTES)
+
     conn = get_db_connection()
 
     try:
         # Wrap everything in one transaction, roll back if error occurs
         with conn:
             cursor = conn.execute(
-                "INSERT INTO orders (customer_name, customer_phone) VALUES (?, ?)",  # status and created_at have default values, so not included here
-                (name, phone),
+                "INSERT INTO orders (customer_name, customer_phone, public_token) VALUES (?, ?, ?)",  # status and created_at have default values, so not included here
+                (name, phone, public_token),
             )
 
             order_id = cursor.lastrowid  # Points back to this specific order
@@ -166,20 +173,20 @@ def place_order():
     conn.close()
 
     # Post/Redirect/Get: send the browser to the confirmation page so a refresh can't resubmit the order
-    return redirect(url_for("confirmation", order_id=order_id))
+    return redirect(url_for("confirmation", token=public_token))
 
 
-@app.route("/order/<int:order_id>")
-def confirmation(order_id):
+@app.route("/order/<token>")
+def confirmation(token):
     conn = get_db_connection()
 
-    # Look up the order itself, using ? because order_id comes from the URL (user input)
+    # Look up the order by its random token, using ? because the token comes from the URL (user input)
     order = conn.execute(
-        "SELECT id, customer_name, created_at FROM orders WHERE id = ?",
-        (order_id,),
+        "SELECT id, customer_name, created_at FROM orders WHERE public_token = ?",
+        (token,),
     ).fetchone()
 
-    # No order with that id exists, so show a 404 (Not Found) page
+    # No order has that token, so show a 404 (Not Found) page
     if order is None:
         conn.close()
         return render_template("error.html", message="We couldn't find that order."), 404
@@ -195,7 +202,7 @@ def confirmation(order_id):
         WHERE oi.order_id = ?
         ORDER BY oi.id
         """,
-        (order_id,),
+        (order["id"],),
     ).fetchall()
     conn.close()
 

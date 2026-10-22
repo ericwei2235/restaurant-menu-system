@@ -49,6 +49,7 @@ erDiagram
         INTEGER id PK
         TEXT customer_name
         TEXT customer_phone
+        TEXT public_token UK "random, used in links"
         TEXT created_at "UTC"
         TEXT status "pending or completed"
     }
@@ -70,6 +71,7 @@ erDiagram
 - **The server never trusts the browser.** The order form sends only item IDs and quantities, and the server looks up prices itself, so prices can't be tampered with. Quantities, lengths, and item IDs are validated on the server, and foreign key constraints reject nonexistent items.
 - **Orders saved in a single transaction.** An order and all its line items are written together; if any part fails, nothing is saved.
 - **Post/Redirect/Get.** After an order is placed, the browser is redirected to the confirmation page, so refreshing can't create a duplicate order.
+- **Unguessable order links.** Confirmation pages are addressed by a random 128-bit token (`/order/k3J9x...`) rather than the order number, so customers can't view each other's orders by changing a number in the URL.
 - **Admin security.** HTTP Basic Auth with the password kept in an environment variable, never in the code; the page is disabled entirely if no password is set; credentials are compared in constant time; and the "mark complete" action rejects requests coming from other websites (CSRF protection).
 - **Timestamps in UTC,** converted to Central time only when displayed.
 
@@ -113,7 +115,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The 48 tests use a fresh temporary database for every test, so they never touch `restaurant.db`. They cover the menu, placing orders, input validation (including SQL injection and price IDs that don't exist), transaction rollback, admin login, and the cross-site request check.
+The 51 tests use a fresh temporary database for every test, so they never touch `restaurant.db`. They cover the menu, placing orders, input validation (including SQL injection and price IDs that don't exist), transaction rollback, admin login, and the cross-site request check.
 
 ## Project structure
 
@@ -149,7 +151,6 @@ The database is rebuilt from the SQL files on every deploy. Because the free tie
 ## Known limitations
 
 - Orders don't persist long-term on the free hosting tier (see Deployment).
-- Order numbers are sequential, so confirmation pages could be viewed by guessing their URL. A production version would use unguessable order links.
 - The menu contains a representative subset of the restaurant's real menu, not the full menu.
 
 ## Roadmap

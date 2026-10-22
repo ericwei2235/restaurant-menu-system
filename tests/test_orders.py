@@ -1,12 +1,16 @@
+import re
+
 import pytest
 
 
 # ---------- Placing a valid order ----------
 
-def test_valid_order_redirects_to_confirmation(place_order, price_id):
+def test_valid_order_redirects_to_its_token_link(place_order, price_id, query):
     response = place_order(**{f"qty_{price_id('002')}": "2"})
+    token = query("SELECT public_token FROM orders")[0][0]
+
     assert response.status_code == 302
-    assert response.headers["Location"] == "/order/1"
+    assert response.headers["Location"] == f"/order/{token}"
 
 
 def test_valid_order_is_saved_with_its_items(place_order, price_id, query):
@@ -32,8 +36,8 @@ def test_phone_number_is_optional(place_order, price_id):
 
 def test_confirmation_shows_items_and_correct_total(client, place_order, price_id):
     # 2 Egg Rolls at $3.75 = $7.50, plus 1 Large Wonton Soup at $6.75 = $14.25
-    place_order(name="Eric", **{f"qty_{price_id('002')}": "2", f"qty_{price_id('020', 'Large')}": "1"})
-    html = client.get("/order/1").get_data(as_text=True)
+    response = place_order(name="Eric", **{f"qty_{price_id('002')}": "2", f"qty_{price_id('020', 'Large')}": "1"})
+    html = client.get(response.headers["Location"]).get_data(as_text=True)
 
     assert "Thanks, Eric!" in html
     assert "Wonton Soup (Large)" in html
@@ -41,8 +45,32 @@ def test_confirmation_shows_items_and_correct_total(client, place_order, price_i
     assert "$14.25" in html
 
 
-def test_confirmation_for_missing_order_is_404(client):
-    assert client.get("/order/999").status_code == 404
+def test_confirmation_for_unknown_token_is_404(client):
+    assert client.get("/order/not-a-real-token").status_code == 404
+
+
+# ---------- Unguessable order links ----------
+
+def test_order_number_alone_does_not_open_the_order(client, place_order, price_id):
+    # The old guessable link style, /order/1, must no longer work
+    place_order(**{f"qty_{price_id('002')}": "1"})
+    assert client.get("/order/1").status_code == 404
+
+
+def test_order_token_is_long_and_url_safe(place_order, price_id, query):
+    place_order(**{f"qty_{price_id('002')}": "1"})
+    token = query("SELECT public_token FROM orders")[0][0]
+
+    # 16 random bytes encode to 22 characters of letters, digits, - and _
+    assert re.fullmatch(r"[A-Za-z0-9_-]{22}", token)
+
+
+def test_every_order_gets_a_different_token(place_order, price_id, query):
+    for _ in range(5):
+        place_order(**{f"qty_{price_id('002')}": "1"})
+    tokens = [row[0] for row in query("SELECT public_token FROM orders")]
+
+    assert len(set(tokens)) == 5
 
 
 def test_order_page_only_accepts_post(client):
