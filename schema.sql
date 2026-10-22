@@ -20,8 +20,10 @@ CREATE TABLE orders(
     customer_name TEXT NOT NULL,
     customer_phone TEXT,
     public_token TEXT NOT NULL UNIQUE,
+    stripe_session_id TEXT UNIQUE,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    status TEXT NOT NULL DEFAULT 'pending'
+    status TEXT NOT NULL DEFAULT 'awaiting_payment'
+        CHECK (status IN ('awaiting_payment', 'pending', 'completed'))
 );
 
 CREATE TABLE order_items(

@@ -4,10 +4,10 @@ SAME_SITE = {"Origin": "http://localhost"}
 
 
 @pytest.fixture
-def two_orders(place_order, price_id):
-    # Order #1 is placed before order #2
-    place_order(name="First Customer", **{f"qty_{price_id('002')}": "1"})
-    place_order(name="Second Customer", **{f"qty_{price_id('020', 'Small')}": "2"})
+def two_orders(place_paid_order, price_id):
+    # Two paid orders; order #1 is placed before order #2
+    place_paid_order(name="First Customer", **{f"qty_{price_id('002')}": "1"})
+    place_paid_order(name="Second Customer", **{f"qty_{price_id('020', 'Small')}": "2"})
 
 
 # ---------- Logging in ----------

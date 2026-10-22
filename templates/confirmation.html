@@ -5,8 +5,25 @@
 {% block content %}
 
 <section class="confirmation">
+    {% if payment_state == "paid" %}
     <h2>Thanks, {{ order.customer_name }}!</h2>
-    <p>Your order number is <strong>#{{ order.id }}</strong>.</p>
+    <p>Your order number is <strong>#{{ order.id }}</strong>. <span class="paid-badge">Payment received</span></p>
+
+    {% elif payment_state == "open" %}
+    <!-- Customer left Stripe's page without paying, but it can still be finished -->
+    <h2>Almost done, {{ order.customer_name }}</h2>
+    <p>Your order <strong>#{{ order.id }}</strong> isn't paid yet, so it hasn't been sent to the kitchen.</p>
+    <p><a class="button-link" href="{{ checkout_url }}">Complete payment</a></p>
+
+    {% elif payment_state == "expired" %}
+    <h2>This order wasn't paid</h2>
+    <p>The payment page for order <strong>#{{ order.id }}</strong> has expired, so the order was not placed. Please start a new order.</p>
+
+    {% else %}
+    <!-- Stripe couldn't be reached, or the payment is still being processed -->
+    <h2>Checking your payment</h2>
+    <p>We couldn't confirm the payment for order <strong>#{{ order.id }}</strong> yet. Please refresh this page in a moment.</p>
+    {% endif %}
 
     <!-- One row per item ordered, plus the order total at the bottom -->
     <table class="order-table">

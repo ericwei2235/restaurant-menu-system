@@ -1,4 +1,5 @@
 from flask import Flask, Response, render_template, request, redirect, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 from datetime import datetime, timezone
 from functools import wraps
 from urllib.parse import urlparse
@@ -7,8 +8,14 @@ import os
 import secrets
 import sqlite3
 
+import stripe
+
 
 app = Flask(__name__)
+
+# On Render, a proxy handles HTTPS and passes requests to the app over plain HTTP.
+# This trusts the proxy's X-Forwarded-Proto header, so links the app builds for Stripe start with https://
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1)
 
 # Build the database path from this file's location, not the terminal's current folder,
 # so the app finds restaurant.db no matter where it's launched from
@@ -28,6 +35,9 @@ ORDER_TOKEN_BYTES = 16
 
 # How many recently completed orders the admin page shows
 COMPLETED_ORDERS_SHOWN = 20
+
+# Stripe amounts are in the smallest currency unit, which for dollars is cents, the same as our database
+CURRENCY = "usd"
 
 
 def get_db_connection():
@@ -94,9 +104,61 @@ def get_menu():
     return menu
 
 
+def get_order_lines(conn, order_id):
+    # Get each line item's name, size, unit price, and quantity for one order
+    # order_items -> menu_item_prices (for size and price) -> menu_items (for the name)
+    return conn.execute(
+        """
+        SELECT m.name, p.size_label, p.price, oi.quantity
+        FROM order_items oi
+        JOIN menu_item_prices p ON p.id = oi.menu_item_price_id
+        JOIN menu_items m ON m.id = p.menu_item_id
+        WHERE oi.order_id = ?
+        ORDER BY oi.id
+        """,
+        (order_id,),
+    ).fetchall()
+
+
 def order_error(message):
     # Show a friendly error page with a 400 (Bad Request) status instead of a bare line of text
     return render_template("error.html", message=message, back_hint=True), 400
+
+
+# ---------- Stripe ----------
+
+def get_stripe_client():
+    # The Stripe secret key lives in an environment variable, like the admin password
+    key = os.environ.get("STRIPE_SECRET_KEY", "")
+
+    # Only test-mode keys are accepted, so this demo can never charge a real card.
+    # A missing key or a live key (sk_live_...) both mean payments are switched off
+    if not key.startswith("sk_test_"):
+        return None
+
+    return stripe.StripeClient(key)
+
+
+def get_checkout_session(session_id):
+    # Ask Stripe directly about a checkout session. Returns None if Stripe can't be reached
+    client = get_stripe_client()
+    if client is None or session_id is None:
+        return None
+
+    try:
+        return client.v1.checkout.sessions.retrieve(session_id)
+    except stripe.StripeError:
+        return None
+
+
+def mark_order_paid(conn, order_id):
+    # Move an order from awaiting payment into the kitchen's pending queue.
+    # "AND status = 'awaiting_payment'" makes this safe to run more than once
+    with conn:
+        conn.execute(
+            "UPDATE orders SET status = 'pending' WHERE id = ? AND status = 'awaiting_payment'",
+            (order_id,),
+        )
 
 
 @app.route("/")
@@ -144,6 +206,11 @@ def place_order():
     if not items:
         return order_error("Please choose at least one item before placing your order.")
 
+    # Check that payments are set up before saving anything, so no order is created that can't be paid for
+    client = get_stripe_client()
+    if client is None:
+        return render_template("error.html", message="Online payment isn't set up right now, so orders can't be placed."), 503
+
     # A long random string that identifies this order in its confirmation link.
     # Order ids count up 1, 2, 3..., so using them in links would let anyone view other people's orders
     public_token = secrets.token_urlsafe(ORDER_TOKEN_BYTES)
@@ -154,7 +221,7 @@ def place_order():
         # Wrap everything in one transaction, roll back if error occurs
         with conn:
             cursor = conn.execute(
-                "INSERT INTO orders (customer_name, customer_phone, public_token) VALUES (?, ?, ?)",  # status and created_at have default values, so not included here
+                "INSERT INTO orders (customer_name, customer_phone, public_token) VALUES (?, ?, ?)",  # status defaults to 'awaiting_payment', created_at to the current time
                 (name, phone, public_token),
             )
 
@@ -170,10 +237,46 @@ def place_order():
         conn.close()
         return order_error("One of the items you chose isn't on the menu.")
 
+    # Build Stripe's line items from the database, never from the form, so prices can't be tampered with
+    line_items = []
+    for row in get_order_lines(conn, order_id):
+        label = f"{row['name']} ({row['size_label']})" if row["size_label"] else row["name"]
+        line_items.append({
+            "price_data": {
+                "currency": CURRENCY,
+                "unit_amount": row["price"],  # already in cents
+                "product_data": {"name": label},
+            },
+            "quantity": row["quantity"],
+        })
+
+    # Stripe sends the customer back to their confirmation page whether they pay or cancel.
+    # That page then asks Stripe which one happened, rather than trusting where the browser came from
+    order_link = url_for("confirmation", token=public_token, _external=True)
+
+    try:
+        session = client.v1.checkout.sessions.create(params={
+            "mode": "payment",
+            "line_items": line_items,
+            "success_url": order_link,
+            "cancel_url": order_link,
+            # Links the Stripe payment back to this order, for the dashboard and for the webhook later
+            "client_reference_id": str(order_id),
+            "metadata": {"order_token": public_token},
+        })
+    except stripe.StripeError:
+        # The order stays saved as unpaid, which hides it from the admin page
+        conn.close()
+        return render_template("error.html", message="We couldn't reach the payment service. Please try again in a moment."), 502
+
+    # Remember which Stripe checkout belongs to this order, so its payment can be checked later
+    with conn:
+        conn.execute("UPDATE orders SET stripe_session_id = ? WHERE id = ?", (session.id, order_id))
     conn.close()
 
-    # Post/Redirect/Get: send the browser to the confirmation page so a refresh can't resubmit the order
-    return redirect(url_for("confirmation", token=public_token))
+    # Send the customer to Stripe's payment page.
+    # 303 tells the browser to follow up with a GET, the standard redirect after a form POST
+    return redirect(session.url, code=303)
 
 
 @app.route("/order/<token>")
@@ -182,7 +285,7 @@ def confirmation(token):
 
     # Look up the order by its random token, using ? because the token comes from the URL (user input)
     order = conn.execute(
-        "SELECT id, customer_name, created_at FROM orders WHERE public_token = ?",
+        "SELECT id, customer_name, status, stripe_session_id FROM orders WHERE public_token = ?",
         (token,),
     ).fetchone()
 
@@ -191,19 +294,30 @@ def confirmation(token):
         conn.close()
         return render_template("error.html", message="We couldn't find that order."), 404
 
-    # Get each line item's name, size, unit price, and quantity
-    # order_items -> menu_item_prices (for size and price) -> menu_items (for the name)
-    rows = conn.execute(
-        """
-        SELECT m.name, p.size_label, p.price, oi.quantity
-        FROM order_items oi
-        JOIN menu_item_prices p ON p.id = oi.menu_item_price_id
-        JOIN menu_items m ON m.id = p.menu_item_id
-        WHERE oi.order_id = ?
-        ORDER BY oi.id
-        """,
-        (order["id"],),
-    ).fetchall()
+    # Work out where payment stands: "paid", "open" (not paid yet), "expired", or "unknown"
+    checkout_url = None
+
+    if order["status"] != "awaiting_payment":
+        # Already confirmed as paid earlier
+        payment_state = "paid"
+    else:
+        # Ask Stripe directly. The browser landing here proves nothing, since anyone can open this link
+        session = get_checkout_session(order["stripe_session_id"])
+
+        if session is not None and session.payment_status == "paid":
+            mark_order_paid(conn, order["id"])
+            payment_state = "paid"
+        elif session is not None and session.status == "open":
+            # Not paid yet, but the Stripe page still works, so offer a link back to it
+            payment_state = "open"
+            checkout_url = session.url
+        elif session is not None and session.status == "expired":
+            payment_state = "expired"
+        else:
+            # Stripe couldn't be reached, or the payment is still processing
+            payment_state = "unknown"
+
+    rows = get_order_lines(conn, order["id"])
     conn.close()
 
     lines = []
@@ -215,13 +329,20 @@ def confirmation(token):
         lines.append(line)
         total_cents += line_cents
 
-    return render_template("confirmation.html", order=order, lines=lines, total=format_price(total_cents))
+    return render_template(
+        "confirmation.html",
+        order=order,
+        lines=lines,
+        total=format_price(total_cents),
+        payment_state=payment_state,
+        checkout_url=checkout_url,
+    )
 
 
 # ---------- Admin ----------
 
 def admin_credentials_valid(auth):
-    # The password lives in an environment variable, never in the code (which is public on GitHub)
+    # The password lives in an environment variable, never in the code
     expected_password = os.environ.get("ADMIN_PASSWORD")
     expected_username = os.environ.get("ADMIN_USERNAME", "admin")
 
@@ -267,7 +388,8 @@ def is_same_origin_request():
 def admin():
     conn = get_db_connection()
 
-    # One query for every order and its items, newest orders first, items in the order they were added
+    # One query for every paid order and its items, newest orders first, items in the order they were added.
+    # Unpaid orders (abandoned checkouts) are left out, since the kitchen shouldn't make them
     rows = conn.execute(
         """
         SELECT o.id AS order_id, o.customer_name, o.customer_phone, o.created_at, o.status,
@@ -276,6 +398,7 @@ def admin():
         JOIN order_items oi ON oi.order_id = o.id
         JOIN menu_item_prices p ON p.id = oi.menu_item_price_id
         JOIN menu_items m ON m.id = p.menu_item_id
+        WHERE o.status IN ('pending', 'completed')
         ORDER BY o.id DESC, oi.id
         """
     ).fetchall()
