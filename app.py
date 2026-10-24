@@ -339,6 +339,47 @@ def confirmation(token):
     )
 
 
+@app.route("/stripe/webhook", methods=["POST"])
+def stripe_webhook():
+    # Stripe's servers call this directly when a payment succeeds, so an order is marked paid
+    # even if the customer closes the tab before being sent back to their confirmation page
+
+    # Fail closed: without the signing secret, there's no way to tell real messages from fake ones
+    secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+    if not secret.startswith("whsec_"):
+        return "Webhook not configured.", 503
+
+    # The signature is calculated over the exact bytes Stripe sent, so use the raw body, not parsed data
+    payload = request.get_data(as_text=True)
+    signature = request.headers.get("Stripe-Signature")
+
+    try:
+        # Checks the signature with our secret and rejects messages older than 5 minutes,
+        # so a fake message, an edited message, or a replayed old one is refused
+        event = stripe.Webhook.construct_event(payload, signature, secret)
+    except (ValueError, stripe.SignatureVerificationError):
+        return "Invalid webhook.", 400
+
+    # Card payments finish as "completed"; slower payment methods finish later as "async_payment_succeeded"
+    if event["type"] in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        session = event["data"]["object"]
+
+        if session["payment_status"] == "paid":
+            conn = get_db_connection()
+            order = conn.execute(
+                "SELECT id FROM orders WHERE stripe_session_id = ?",
+                (session["id"],),
+            ).fetchone()
+
+            # Stripe may send the same message more than once; mark_order_paid is safe to repeat
+            if order is not None:
+                mark_order_paid(conn, order["id"])
+            conn.close()
+
+    # Always answer 200 for messages we've read, or Stripe keeps resending them
+    return "", 200
+
+
 # ---------- Admin ----------
 
 def admin_credentials_valid(auth):
