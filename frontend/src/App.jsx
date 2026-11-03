@@ -1,48 +1,40 @@
-import { useEffect, useState } from 'react'
+import { Link, Route, Routes } from 'react-router'
+import MenuPage from './pages/MenuPage.jsx'
+import NotFoundPage from './pages/NotFoundPage.jsx'
 
-// A component is a function that returns what should appear on screen.
-// The HTML-like syntax is JSX: it looks like HTML but compiles to JavaScript
+// The parts every page shares (banner, header, footer) are written once here,
+// and <Routes> swaps in the right page for the current address
 function App() {
-  // useState creates a value React remembers between renders, plus a function to change it.
-  // Calling the setter makes React re-run this function and update the page
-  const [menu, setMenu] = useState(null)
-  const [error, setError] = useState(null)
-
-  // useEffect runs code after the component appears on screen.
-  // The empty list [] at the end means "only once", not after every re-render
-  useEffect(() => {
-    // Ask Flask for the menu. In development, Vite's proxy forwards /api/... to Flask
-    fetch('/api/menu')
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`The server answered ${response.status}`)
-        }
-        return response.json()
-      })
-      .then((data) => setMenu(data))
-      .catch((err) => setError(err.message))
-  }, [])
-
-  // Count the items and price options across all categories
-  const itemCount = menu ? menu.categories.reduce((total, category) => total + category.items.length, 0) : 0
-
   return (
     <>
+      {/* Warns visitors this is a portfolio demo so nobody thinks they placed a real order */}
+      <p className="demo-banner">
+        Demo project &mdash; orders placed here are not sent to the restaurant. Payments run in test mode: use card{' '}
+        <strong>4242 4242 4242 4242</strong> with any future date and any CVC.
+      </p>
+
       <header>
-        <h1>China Chef</h1>
+        {/* Link changes the page without reloading, unlike a plain <a href> */}
+        <h1>
+          <Link to="/">China Chef</Link>
+        </h1>
         <p className="tagline">Authentic Chinese-American Cuisine</p>
       </header>
 
       <main>
-        {/* Exactly one of these three lines shows, depending on where loading stands */}
-        {error && <p>Couldn't reach the server: {error}</p>}
-        {!error && !menu && <p>Loading the menu...</p>}
-        {menu && (
-          <p>
-            Connected to the API: {menu.categories.length} categories, {itemCount} items.
-          </p>
-        )}
+        <Routes>
+          <Route path="/" element={<MenuPage />} />
+          {/* The order and admin pages are built in the next steps */}
+          <Route path="/order/:token" element={<p>The order page is coming in the next step.</p>} />
+          <Route path="/admin" element={<p>The admin page is coming soon.</p>} />
+          {/* "*" matches any address not listed above */}
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
       </main>
+
+      <footer>
+        <p>364 W Indian Trail Rd</p>
+      </footer>
     </>
   )
 }
