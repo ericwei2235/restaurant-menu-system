@@ -1,6 +1,7 @@
 import { Link, Route, Routes } from 'react-router'
 import MenuPage from './pages/MenuPage.jsx'
 import NotFoundPage from './pages/NotFoundPage.jsx'
+import OrderPage from './pages/OrderPage.jsx'
 
 // The parts every page shares (banner, header, footer) are written once here,
 // and <Routes> swaps in the right page for the current address
@@ -24,8 +25,9 @@ function App() {
       <main>
         <Routes>
           <Route path="/" element={<MenuPage />} />
-          {/* The order and admin pages are built in the next steps */}
-          <Route path="/order/:token" element={<p>The order page is coming in the next step.</p>} />
+          {/* Stripe sends customers back here after paying or cancelling */}
+          <Route path="/order/:token" element={<OrderPage />} />
+          {/* The admin page is built in the next step */}
           <Route path="/admin" element={<p>The admin page is coming soon.</p>} />
           {/* "*" matches any address not listed above */}
           <Route path="*" element={<NotFoundPage />} />
