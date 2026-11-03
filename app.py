@@ -1,9 +1,8 @@
-from flask import Flask, Response, jsonify, render_template, request, redirect, url_for
+from flask import Flask, jsonify, request, session
 from werkzeug.middleware.proxy_fix import ProxyFix
-from datetime import datetime, timezone
+from datetime import timedelta
 from functools import wraps
 from urllib.parse import urlparse
-from zoneinfo import ZoneInfo
 import os
 import secrets
 import sqlite3
@@ -17,6 +16,25 @@ app = Flask(__name__)
 # This trusts the proxy's X-Forwarded-Proto header, so links the app builds for Stripe start with https://
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1)
 
+# The admin login is remembered in a session cookie signed with SECRET_KEY, so it can't be forged.
+# Like the other secrets, it comes from an environment variable and is never in the code
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")
+
+# Session cookie safety settings:
+# HttpOnly: page scripts can't read the cookie, so even injected JavaScript couldn't steal the login
+# SameSite=Lax: the browser doesn't attach the cookie to requests other websites send in the background
+# Secure: the cookie is only ever sent over HTTPS (switched off below for local development)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = True
+
+# How long an admin stays logged in, about one long restaurant shift
+ADMIN_SESSION_LIFETIME = timedelta(hours=12)
+app.config["PERMANENT_SESSION_LIFETIME"] = ADMIN_SESSION_LIFETIME
+
+# A SECRET_KEY shorter than this is treated as missing, since short keys can be guessed
+MIN_SECRET_KEY_LENGTH = 32
+
 # Build the database path from this file's location, not the terminal's current folder,
 # so the app finds restaurant.db no matter where it's launched from
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,9 +44,6 @@ DATABASE = os.path.join(BASE_DIR, "restaurant.db")
 MAX_QUANTITY = 20
 MAX_NAME_LENGTH = 100
 MAX_PHONE_LENGTH = 30
-
-# The restaurant is in Aurora, IL, so admin times are shown in Central time
-RESTAURANT_TIMEZONE = ZoneInfo("America/Chicago")
 
 # Random bytes in each order's confirmation-link token (16 bytes = 128 bits, about 22 characters)
 ORDER_TOKEN_BYTES = 16
@@ -47,18 +62,6 @@ def get_db_connection():
     # SQLite ignores FOREIGN KEY constraints unless this is set, and it only lasts for this connection
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
-
-
-def format_price(cents):
-    # Convert an integer number of cents (e.g. 375) into a dollar string (e.g. "3.75")
-    return f"{cents / 100:.2f}"
-
-
-def format_order_time(created_at):
-    # SQLite's CURRENT_TIMESTAMP is stored as UTC text like "2026-10-08 18:30:00"
-    utc_time = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-    # Convert to the restaurant's local time, e.g. "Oct 08, 01:30 PM"
-    return utc_time.astimezone(RESTAURANT_TIMEZONE).strftime("%b %d, %I:%M %p")
 
 
 def line_to_json(row):
@@ -82,20 +85,6 @@ def is_whole_number(value):
     # True only for real integers. JSON true/false arrive in Python as True/False, which Python
     # counts as the integers 1 and 0, so check the exact type rather than using isinstance
     return type(value) is int
-
-
-def build_line(row):
-    # Turn one ordered item (name, size_label, price, quantity) into a display-ready line
-    # Returns the line and its total in cents, so callers can add up the order total exactly
-    line_cents = row["price"] * row["quantity"]
-    line = {
-        "name": row["name"],
-        "size": row["size_label"],
-        "quantity": row["quantity"],
-        "unit_price": format_price(row["price"]),
-        "line_total": format_price(line_cents),
-    }
-    return line, line_cents
 
 
 def get_menu():
@@ -378,9 +367,10 @@ def api_get_order(token):
 @app.errorhandler(404)
 def not_found(error):
     # Unknown /api/... addresses get a JSON error like every other API response
+    # Other addresses keep Flask's default page for now; they'll show the React app later
     if request.path.startswith("/api/"):
         return api_error("Not found.", 404)
-    return render_template("error.html", message="We couldn't find that page."), 404
+    return error
 
 
 @app.errorhandler(405)
@@ -400,7 +390,7 @@ def server_error(error):
     # An unexpected crash. Keep the details private and send a plain message instead
     if request.path.startswith("/api/"):
         return api_error("Something went wrong on our end. Please try again.", 500)
-    return render_template("error.html", message="Something went wrong on our end. Please try again."), 500
+    return error
 
 
 @app.route("/stripe/webhook", methods=["POST"])
@@ -446,41 +436,27 @@ def stripe_webhook():
 
 # ---------- Admin ----------
 
-def admin_credentials_valid(auth):
-    # The password lives in an environment variable, never in the code
-    expected_password = os.environ.get("ADMIN_PASSWORD")
-    expected_username = os.environ.get("ADMIN_USERNAME", "admin")
+def admin_is_configured():
+    # The admin area only works when both secrets are set on the server.
+    # A short SECRET_KEY counts as missing, since a guessable key would let anyone forge a login cookie
+    secret_key = app.config.get("SECRET_KEY") or ""
+    return bool(os.environ.get("ADMIN_PASSWORD")) and len(secret_key) >= MIN_SECRET_KEY_LENGTH
 
-    # No login info sent, or no password configured on the server
-    if auth is None or not expected_password:
-        return False
+
+def admin_credentials_valid(username, password):
+    # The password lives in an environment variable, never in the code
+    expected_password = os.environ.get("ADMIN_PASSWORD", "")
+    expected_username = os.environ.get("ADMIN_USERNAME", "admin")
 
     # compare_digest takes the same time whether the first or last character is wrong,
     # so an attacker can't guess the password one character at a time by timing responses
-    username_ok = secrets.compare_digest((auth.username or "").encode(), expected_username.encode())
-    password_ok = secrets.compare_digest((auth.password or "").encode(), expected_password.encode())
+    username_ok = secrets.compare_digest(username.encode(), expected_username.encode())
+    password_ok = secrets.compare_digest(password.encode(), expected_password.encode())
     return username_ok and password_ok
 
 
-def require_admin(view):
-    # A decorator: wraps a route so the login check runs before the route's own code
-    @wraps(view)
-    def wrapped_view(*args, **kwargs):
-        # Fail closed: if no password is configured, the admin page is off rather than open to everyone
-        if not os.environ.get("ADMIN_PASSWORD"):
-            return render_template("error.html", message="The admin page is disabled because no admin password is set."), 503
-
-        if not admin_credentials_valid(request.authorization):
-            # 401 plus this header makes the browser show its built-in username/password popup
-            return Response("Login required.", 401, {"WWW-Authenticate": 'Basic realm="China Chef Admin"'})
-
-        return view(*args, **kwargs)
-
-    return wrapped_view
-
-
 def is_same_origin_request():
-    # Browsers send the admin password automatically, even on requests another website triggers.
+    # The browser sends the admin's login cookie automatically, even on requests another website triggers.
     # Checking where the request came from blocks other sites from submitting forms to our admin routes
     source = request.headers.get("Origin") or request.headers.get("Referer")
     if not source:
@@ -488,9 +464,86 @@ def is_same_origin_request():
     return urlparse(source).netloc == request.host
 
 
-@app.route("/admin")
+def require_same_origin(view):
+    # A decorator for admin actions that change something: reject requests that came from other websites
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+        if not is_same_origin_request():
+            return api_error("That request came from somewhere unexpected and was blocked.", 403)
+        return view(*args, **kwargs)
+
+    return wrapped_view
+
+
+def require_admin(view):
+    # A decorator: wraps a route so the login check runs before the route's own code
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+        # Fail closed: if the secrets aren't configured, the admin area is off rather than open to everyone
+        if not admin_is_configured():
+            return api_error("The admin area is turned off because it isn't configured.", 503)
+
+        # The session cookie is signed with SECRET_KEY, so "admin" can only be in it if this server put it there
+        if "admin" not in session:
+            return api_error("Please log in.", 401)
+
+        return view(*args, **kwargs)
+
+    return wrapped_view
+
+
+def to_utc_iso(created_at):
+    # SQLite stores CURRENT_TIMESTAMP as UTC text like "2026-10-08 05:27:03".
+    # The API sends the standard ISO 8601 form, "2026-10-08T05:27:03Z", where Z means UTC
+    return created_at.replace(" ", "T") + "Z"
+
+
+@app.route("/api/admin/login", methods=["POST"])
+@require_same_origin
+def api_admin_login():
+    if not admin_is_configured():
+        return api_error("The admin area is turned off because it isn't configured.", 503)
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return api_error("Send the username and password as JSON.", 400)
+
+    username = data.get("username")
+    password = data.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
+        return api_error("Send the username and password as JSON.", 400)
+
+    # The same message for a wrong username or a wrong password, so attackers can't learn which usernames exist
+    if not admin_credentials_valid(username, password):
+        return api_error("Incorrect username or password.", 401)
+
+    # Start a fresh session, then mark it as logged in.
+    # permanent=True keeps the login for ADMIN_SESSION_LIFETIME instead of ending when the browser closes
+    session.clear()
+    session["admin"] = username
+    session.permanent = True
+    return jsonify({"username": username})
+
+
+@app.route("/api/admin/logout", methods=["POST"])
+@require_same_origin
+def api_admin_logout():
+    session.clear()
+    # 204 means "No Content": it worked and there's nothing to send back
+    return "", 204
+
+
+@app.route("/api/admin/session")
+def api_admin_session():
+    # Lets the frontend decide whether to show the login form or the dashboard
+    if admin_is_configured() and "admin" in session:
+        return jsonify({"logged_in": True, "username": session["admin"]})
+    return jsonify({"logged_in": False})
+
+
+@app.route("/api/admin/orders")
 @require_admin
-def admin():
+def api_admin_orders():
     conn = get_db_connection()
 
     # One query for every paid order and its items, newest orders first, items in the order they were added.
@@ -512,56 +565,64 @@ def admin():
     orders = []
 
     for row in rows:
-        line, line_cents = build_line(row)
+        line = line_to_json(row)
 
         # Same grouping idea as get_menu(): rows for one order are next to each other thanks to ORDER BY
-        if orders and orders[-1]["id"] == row["order_id"]:
+        if orders and orders[-1]["order_number"] == row["order_id"]:
             # Same order as the last row, so just add this item to it
             orders[-1]["lines"].append(line)
-            orders[-1]["total_cents"] += line_cents
+            orders[-1]["total_cents"] += line["line_total_cents"]
         else:
             # First row of a new order
             orders.append({
-                "id": row["order_id"],
+                "order_number": row["order_id"],
                 "customer_name": row["customer_name"],
                 "customer_phone": row["customer_phone"],
-                "time": format_order_time(row["created_at"]),
+                "created_at": to_utc_iso(row["created_at"]),
                 "status": row["status"],
                 "lines": [line],
-                "total_cents": line_cents,
+                "total_cents": line["line_total_cents"],
             })
-
-    # Convert each order total to dollars once all its items have been added
-    for order in orders:
-        order["total"] = format_price(order["total_cents"])
 
     # Pending orders oldest first, like a queue; completed orders newest first, only the most recent few
     pending = [order for order in orders if order["status"] == "pending"]
     pending.reverse()
     completed = [order for order in orders if order["status"] == "completed"][:COMPLETED_ORDERS_SHOWN]
 
-    return render_template("admin.html", pending=pending, completed=completed)
+    return jsonify({"pending": pending, "completed": completed})
 
 
-@app.route("/admin/orders/<int:order_id>/complete", methods=["POST"])
+@app.route("/api/admin/orders/<int:order_number>/complete", methods=["POST"])
 @require_admin
-def complete_order(order_id):
-    # Reject the request if it was submitted from some other website
-    if not is_same_origin_request():
-        return render_template("error.html", message="That request came from somewhere unexpected and was blocked."), 403
-
+@require_same_origin
+def api_admin_complete_order(order_number):
     conn = get_db_connection()
+
+    order = conn.execute("SELECT status FROM orders WHERE id = ?", (order_number,)).fetchone()
+
+    if order is None:
+        conn.close()
+        return api_error("There's no order with that number.", 404)
+
+    # 409 means "Conflict": the request makes sense, but not for an order in this state
+    if order["status"] == "awaiting_payment":
+        conn.close()
+        return api_error("That order hasn't been paid yet, so it can't be completed.", 409)
+
     with conn:
-        # Only pending orders can be completed; completing one twice does nothing
+        # Only pending orders change; completing an already-completed order does nothing, which is fine
         conn.execute(
             "UPDATE orders SET status = 'completed' WHERE id = ? AND status = 'pending'",
-            (order_id,),
+            (order_number,),
         )
     conn.close()
 
-    # Post/Redirect/Get again, so refreshing the admin page doesn't resend the button press
-    return redirect(url_for("admin"))
+    return jsonify({"order_number": order_number, "status": "completed"})
 
 
 if __name__ == "__main__":
+    # Running "python app.py" means local development over plain http://, where a Secure-only
+    # cookie would never be sent back, so logging in couldn't work. In production (gunicorn) this
+    # block never runs, so the cookie stays Secure there
+    app.config["SESSION_COOKIE_SECURE"] = False
     app.run(debug=True)

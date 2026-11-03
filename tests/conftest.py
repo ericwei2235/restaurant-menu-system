@@ -9,6 +9,10 @@ import app as app_module
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADMIN_PASSWORD = "test-password"
+SECRET_KEY = "test-secret-key-that-is-at-least-32-characters-long"
+
+# Admin POSTs must say they came from this site; the test client's site is http://localhost
+SAME_SITE = {"Origin": "http://localhost"}
 
 
 class FakeStripe:
@@ -78,16 +82,29 @@ def fake_stripe(monkeypatch):
 
 @pytest.fixture
 def client(db_path, fake_stripe, monkeypatch):
-    # A fake browser that sends requests straight to the app, without running a server
+    # A fake browser that sends requests straight to the app, without running a server.
+    # Like a real browser, it keeps cookies between requests, so a login stays logged in
     monkeypatch.setenv("ADMIN_PASSWORD", ADMIN_PASSWORD)
-    app_module.app.config["TESTING"] = True
+    monkeypatch.setitem(app_module.app.config, "SECRET_KEY", SECRET_KEY)
+    # The test client talks plain http://, so Secure-only cookies would never be sent back
+    monkeypatch.setitem(app_module.app.config, "SESSION_COOKIE_SECURE", False)
+    monkeypatch.setitem(app_module.app.config, "TESTING", True)
     return app_module.app.test_client()
 
 
 @pytest.fixture
-def admin_auth():
-    # Correct admin login, passed as auth=... on requests
-    return ("admin", ADMIN_PASSWORD)
+def login(client):
+    # Log the test client in as admin (or try to, with other credentials)
+    def submit(username="admin", password=ADMIN_PASSWORD, headers=SAME_SITE):
+        return client.post("/api/admin/login", json={"username": username, "password": password}, headers=headers)
+    return submit
+
+
+@pytest.fixture
+def logged_in(login):
+    # For tests that just need to be logged in already
+    response = login()
+    assert response.status_code == 200
 
 
 @pytest.fixture

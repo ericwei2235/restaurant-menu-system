@@ -1,24 +1,6 @@
 import app as app_module
 
 
-# ---------- Helper functions still used by the admin page ----------
-
-def test_format_price_converts_cents_to_dollars():
-    assert app_module.format_price(375) == "3.75"
-    assert app_module.format_price(1000) == "10.00"
-    assert app_module.format_price(5) == "0.05"
-
-
-def test_format_order_time_converts_utc_to_central_daylight_time():
-    # October is daylight saving time, so Chicago is UTC-5
-    assert app_module.format_order_time("2026-10-08 05:27:03") == "Oct 08, 12:27 AM"
-
-
-def test_format_order_time_converts_utc_to_central_standard_time():
-    # January is standard time, so Chicago is UTC-6
-    assert app_module.format_order_time("2026-01-15 18:00:00") == "Jan 15, 12:00 PM"
-
-
 # ---------- get_menu() grouping ----------
 
 def test_get_menu_groups_items_by_category_in_order(db_path):

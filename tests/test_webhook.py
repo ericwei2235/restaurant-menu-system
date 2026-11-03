@@ -56,11 +56,11 @@ def test_paid_checkout_marks_the_order_paid(send_webhook, unpaid_order, query):
     assert order_status(query) == "pending"
 
 
-def test_webhook_paid_order_shows_up_for_the_kitchen(client, admin_auth, send_webhook, unpaid_order):
+def test_webhook_paid_order_shows_up_for_the_kitchen(client, logged_in, send_webhook, unpaid_order):
     send_webhook("checkout.session.completed", unpaid_order.session_id)
-    html = client.get("/admin", auth=admin_auth).get_data(as_text=True)
+    pending = client.get("/api/admin/orders").get_json()["pending"]
 
-    assert "Closed The Tab" in html
+    assert [o["customer_name"] for o in pending] == ["Closed The Tab"]
 
 
 def test_delayed_payment_success_marks_the_order_paid(send_webhook, unpaid_order, query):
@@ -76,9 +76,9 @@ def test_duplicate_messages_are_harmless(send_webhook, unpaid_order, query):
     assert order_status(query) == "pending"
 
 
-def test_webhook_does_not_undo_a_completed_order(client, admin_auth, send_webhook, unpaid_order, query):
+def test_webhook_does_not_undo_a_completed_order(client, logged_in, send_webhook, unpaid_order, query):
     send_webhook("checkout.session.completed", unpaid_order.session_id)
-    client.post("/admin/orders/1/complete", auth=admin_auth, headers={"Origin": "http://localhost"})
+    client.post("/api/admin/orders/1/complete", headers={"Origin": "http://localhost"})
     send_webhook("checkout.session.completed", unpaid_order.session_id)
 
     assert order_status(query) == "completed"

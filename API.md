@@ -140,7 +140,9 @@ Admin access uses a login session. After a successful login, Flask sets a **sess
 
 **Cross-site protection:** every admin `POST` (including login and logout) is rejected with **403** unless its `Origin` or `Referer` header shows it came from this site.
 
-**Not configured:** if `ADMIN_PASSWORD` or `SECRET_KEY` is missing, admin endpoints return **503** (fail closed).
+**Not configured:** if `ADMIN_PASSWORD` is missing, or `SECRET_KEY` is missing or shorter than 32 characters, admin endpoints return **503** (fail closed).
+
+**Login lifetime:** a session lasts 12 hours, then the admin logs in again.
 
 ### `POST /api/admin/login`
 

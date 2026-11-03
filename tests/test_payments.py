@@ -151,23 +151,7 @@ def test_paid_order_is_not_rechecked_with_stripe(client, place_paid_order, price
     assert client.get(order.link).get_json()["payment_state"] == "paid"
 
 
-# ---------- Admin only sees paid orders ----------
-
-def test_admin_hides_unpaid_orders(client, admin_auth, place_order, place_paid_order, price_id):
-    place_order(name="Never Paid", items=[(price_id("002"), 1)])
-    place_paid_order(name="Paid Customer", items=[(price_id("002"), 1)])
-    html = client.get("/admin", auth=admin_auth).get_data(as_text=True)
-
-    assert "Paid Customer" in html
-    assert "Never Paid" not in html
-
-
-def test_admin_cannot_complete_an_unpaid_order(client, admin_auth, place_order, price_id, query):
-    place_order(items=[(price_id("002"), 1)])
-    client.post("/admin/orders/1/complete", auth=admin_auth, headers={"Origin": "http://localhost"})
-
-    assert query("SELECT status FROM orders") == [("awaiting_payment",)]
-
+# ---------- Database rules ----------
 
 def test_database_rejects_unknown_order_statuses(db_path):
     # The CHECK constraint in schema.sql only allows the three real statuses
