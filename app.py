@@ -1,4 +1,4 @@
-from flask import Flask, Response, render_template, request, redirect, url_for
+from flask import Flask, Response, jsonify, render_template, request, redirect, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 from datetime import datetime, timezone
 from functools import wraps
@@ -61,6 +61,29 @@ def format_order_time(created_at):
     return utc_time.astimezone(RESTAURANT_TIMEZONE).strftime("%b %d, %I:%M %p")
 
 
+def line_to_json(row):
+    # Turn one ordered item (name, size_label, price, quantity) into the API's line format.
+    # All money stays in integer cents; the frontend formats it for display
+    return {
+        "name": row["name"],
+        "size": row["size_label"],
+        "quantity": row["quantity"],
+        "unit_price_cents": row["price"],
+        "line_total_cents": row["price"] * row["quantity"],
+    }
+
+
+def api_error(message, status):
+    # Every API error has the same shape, so the frontend can show any of them the same way
+    return jsonify({"error": message}), status
+
+
+def is_whole_number(value):
+    # True only for real integers. JSON true/false arrive in Python as True/False, which Python
+    # counts as the integers 1 and 0, so check the exact type rather than using isinstance
+    return type(value) is int
+
+
 def build_line(row):
     # Turn one ordered item (name, size_label, price, quantity) into a display-ready line
     # Returns the line and its total in cents, so callers can add up the order total exactly
@@ -76,8 +99,9 @@ def build_line(row):
 
 
 def get_menu():
+    # Returns a list of categories, each with its items, each item with its price options
 
-    menu = {}
+    categories = []
 
     conn = get_db_connection()
     # Join the menu_items with menu_item_prices
@@ -86,22 +110,23 @@ def get_menu():
     conn.close()
 
     for row in rows:
-        # Creates a category with value of empty list if it doesn't exist already
-        if row["category"] not in menu:
-            menu[row["category"]] = []
+        # Start a new category when this row's category differs from the last one
+        # (ORDER BY m.category keeps each category's rows together)
+        if not categories or categories[-1]["name"] != row["category"]:
+            categories.append({"name": row["category"], "items": []})
 
-        price = {"id": row["price_id"], "label": row["size_label"], "price": format_price(row["price"])}
+        items = categories[-1]["items"]
+        price = {"id": row["price_id"], "label": row["size_label"], "price_cents": row["price"]}
 
         # Checks if the last item has the same name as the current row's item
-        if menu[row["category"]] and menu[row["category"]][-1]["name"] == row["name"]:
+        if items and items[-1]["name"] == row["name"]:
             # If yes, just append this row's size and price to the existing price list
-            menu[row["category"]][-1]["prices"].append(price)
+            items[-1]["prices"].append(price)
         else:
             # Otherwise, create a new menu item entry using this row's info
-            entry = {"name": row["name"], "description": row["description"], "prices": [price]}
-            menu[row["category"]].append(entry)
+            items.append({"name": row["name"], "description": row["description"], "prices": [price]})
 
-    return menu
+    return categories
 
 
 def get_order_lines(conn, order_id):
@@ -118,11 +143,6 @@ def get_order_lines(conn, order_id):
         """,
         (order_id,),
     ).fetchall()
-
-
-def order_error(message):
-    # Show a friendly error page with a 400 (Bad Request) status instead of a bare line of text
-    return render_template("error.html", message=message, back_hint=True), 400
 
 
 # ---------- Stripe ----------
@@ -161,55 +181,92 @@ def mark_order_paid(conn, order_id):
         )
 
 
-@app.route("/")
-def home():
-    menu = get_menu()
-    return render_template("menu.html", menu=menu)
+def get_payment_state(conn, order):
+    # Work out where an order's payment stands: "paid", "open" (not paid yet), "expired", or "unknown".
+    # Returns the state and, for "open", the link back to Stripe's payment page
+    if order["status"] != "awaiting_payment":
+        # Already confirmed as paid earlier
+        return "paid", None
+
+    # Ask Stripe directly. A customer opening the order link proves nothing, since anyone can open it
+    session = get_checkout_session(order["stripe_session_id"])
+
+    if session is not None and session.payment_status == "paid":
+        mark_order_paid(conn, order["id"])
+        return "paid", None
+    if session is not None and session.status == "open":
+        # Not paid yet, but the Stripe page still works, so offer a link back to it
+        return "open", session.url
+    if session is not None and session.status == "expired":
+        return "expired", None
+    # Stripe couldn't be reached, or the payment is still processing
+    return "unknown", None
 
 
-@app.route("/order", methods=["POST"])
-def place_order():
-    name = request.form.get("name", "").strip()
+# ---------- Public API ----------
 
-    if not name:
-        return order_error("Please enter your name.")
+@app.route("/api/menu")
+def api_menu():
+    return jsonify({"categories": get_menu()})
+
+
+@app.route("/api/orders", methods=["POST"])
+def api_create_order():
+    # The order must arrive as JSON. 415 means "Unsupported Media Type": wrong kind of body
+    if not request.is_json:
+        return api_error("Send the order as JSON.", 415)
+
+    # silent=True returns None for broken JSON instead of raising an error, so it can be rejected cleanly
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return api_error("The order couldn't be read.", 400)
+
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return api_error("Please enter your name.", 400)
+    name = name.strip()
     if len(name) > MAX_NAME_LENGTH:
-        return order_error("That name is too long.")
+        return api_error("That name is too long.", 400)
 
-    phone = request.form.get("phone", "").strip()
-
+    # Phone is optional, so a missing or null phone becomes an empty string
+    phone = data.get("phone") or ""
+    if not isinstance(phone, str):
+        return api_error("That phone number couldn't be read.", 400)
+    phone = phone.strip()
     if len(phone) > MAX_PHONE_LENGTH:
-        return order_error("That phone number is too long.")
+        return api_error("That phone number is too long.", 400)
+
+    raw_items = data.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        return api_error("Please choose at least one item before placing your order.", 400)
 
     items = []
+    seen_price_ids = set()
 
-    for key, value in request.form.items():
-        # Skips if the current row is a name or phone number
-        if not key.startswith("qty_"):
-            continue
+    for entry in raw_items:
+        # Each item must look like {"price_id": 3, "quantity": 2}
+        if not isinstance(entry, dict):
+            return api_error("Something was wrong with the order. Please try again.", 400)
 
-        try:
-            price_id = int(key[4:])
-            quantity = int(value)
-        except ValueError:
-            # Reject order if id is invalid or quantity isn't a valid number
-            return order_error("Something was wrong with the order form. Please try again.")
+        price_id = entry.get("price_id")
+        quantity = entry.get("quantity")
 
-        # Skip if order is 0 (they didn't order that item)
-        if quantity < 1:
-            continue
-        if quantity > MAX_QUANTITY:
-            return order_error(f"You can order at most {MAX_QUANTITY} of a single item.")
+        if not is_whole_number(price_id) or not is_whole_number(quantity):
+            return api_error("Something was wrong with the order. Please try again.", 400)
+        if quantity < 1 or quantity > MAX_QUANTITY:
+            return api_error(f"You can order between 1 and {MAX_QUANTITY} of a single item.", 400)
+
+        # JSON allows listing the same item twice, which the old form couldn't; reject it to keep orders clean
+        if price_id in seen_price_ids:
+            return api_error("Each item can only be listed once.", 400)
+        seen_price_ids.add(price_id)
 
         items.append((price_id, quantity))
-
-    if not items:
-        return order_error("Please choose at least one item before placing your order.")
 
     # Check that payments are set up before saving anything, so no order is created that can't be paid for
     client = get_stripe_client()
     if client is None:
-        return render_template("error.html", message="Online payment isn't set up right now, so orders can't be placed."), 503
+        return api_error("Online payment isn't set up right now, so orders can't be placed.", 503)
 
     # A long random string that identifies this order in its confirmation link.
     # Order ids count up 1, 2, 3..., so using them in links would let anyone view other people's orders
@@ -235,7 +292,7 @@ def place_order():
     # Exit in case of foreign key violation (a price id that doesn't exist)
     except sqlite3.IntegrityError:
         conn.close()
-        return order_error("One of the items you chose isn't on the menu.")
+        return api_error("One of the items you chose isn't on the menu.", 400)
 
     # Build Stripe's line items from the database, never from the form, so prices can't be tampered with
     line_items = []
@@ -251,8 +308,10 @@ def place_order():
         })
 
     # Stripe sends the customer back to their confirmation page whether they pay or cancel.
-    # That page then asks Stripe which one happened, rather than trusting where the browser came from
-    order_link = url_for("confirmation", token=public_token, _external=True)
+    # That page then asks Stripe which one happened, rather than trusting where the browser came from.
+    # request.host_url is this site's address (e.g. "https://china-chef-demo.onrender.com/");
+    # /order/<token> is a page the React app shows
+    order_link = f"{request.host_url}order/{public_token}"
 
     try:
         session = client.v1.checkout.sessions.create(params={
@@ -265,22 +324,27 @@ def place_order():
             "metadata": {"order_token": public_token},
         })
     except stripe.StripeError:
-        # The order stays saved as unpaid, which hides it from the admin page
+        # The order stays saved as unpaid, which hides it from the admin page.
+        # 502 means "Bad Gateway": a service this server depends on failed
         conn.close()
-        return render_template("error.html", message="We couldn't reach the payment service. Please try again in a moment."), 502
+        return api_error("We couldn't reach the payment service. Please try again in a moment.", 502)
 
     # Remember which Stripe checkout belongs to this order, so its payment can be checked later
     with conn:
         conn.execute("UPDATE orders SET stripe_session_id = ? WHERE id = ?", (session.id, order_id))
     conn.close()
 
-    # Send the customer to Stripe's payment page.
-    # 303 tells the browser to follow up with a GET, the standard redirect after a form POST
-    return redirect(session.url, code=303)
+    # 201 means "Created". The frontend sends the browser to checkout_url itself,
+    # instead of the server redirecting like the old HTML form did
+    return jsonify({
+        "order_number": order_id,
+        "token": public_token,
+        "checkout_url": session.url,
+    }), 201
 
 
-@app.route("/order/<token>")
-def confirmation(token):
+@app.route("/api/orders/<token>")
+def api_get_order(token):
     conn = get_db_connection()
 
     # Look up the order by its random token, using ? because the token comes from the URL (user input)
@@ -289,54 +353,54 @@ def confirmation(token):
         (token,),
     ).fetchone()
 
-    # No order has that token, so show a 404 (Not Found) page
     if order is None:
         conn.close()
-        return render_template("error.html", message="We couldn't find that order."), 404
+        return api_error("We couldn't find that order.", 404)
 
-    # Work out where payment stands: "paid", "open" (not paid yet), "expired", or "unknown"
-    checkout_url = None
+    payment_state, checkout_url = get_payment_state(conn, order)
 
-    if order["status"] != "awaiting_payment":
-        # Already confirmed as paid earlier
-        payment_state = "paid"
-    else:
-        # Ask Stripe directly. The browser landing here proves nothing, since anyone can open this link
-        session = get_checkout_session(order["stripe_session_id"])
-
-        if session is not None and session.payment_status == "paid":
-            mark_order_paid(conn, order["id"])
-            payment_state = "paid"
-        elif session is not None and session.status == "open":
-            # Not paid yet, but the Stripe page still works, so offer a link back to it
-            payment_state = "open"
-            checkout_url = session.url
-        elif session is not None and session.status == "expired":
-            payment_state = "expired"
-        else:
-            # Stripe couldn't be reached, or the payment is still processing
-            payment_state = "unknown"
-
-    rows = get_order_lines(conn, order["id"])
+    lines = [line_to_json(row) for row in get_order_lines(conn, order["id"])]
     conn.close()
 
-    lines = []
-    total_cents = 0
+    return jsonify({
+        "order_number": order["id"],
+        "customer_name": order["customer_name"],
+        "payment_state": payment_state,
+        "checkout_url": checkout_url,
+        "lines": lines,
+        # Add up the order total in integer cents, so it's always exact
+        "total_cents": sum(line["line_total_cents"] for line in lines),
+    })
 
-    for row in rows:
-        # Do all math in integer cents, then format to dollars only for display
-        line, line_cents = build_line(row)
-        lines.append(line)
-        total_cents += line_cents
 
-    return render_template(
-        "confirmation.html",
-        order=order,
-        lines=lines,
-        total=format_price(total_cents),
-        payment_state=payment_state,
-        checkout_url=checkout_url,
-    )
+# ---------- API errors ----------
+
+@app.errorhandler(404)
+def not_found(error):
+    # Unknown /api/... addresses get a JSON error like every other API response
+    if request.path.startswith("/api/"):
+        return api_error("Not found.", 404)
+    return render_template("error.html", message="We couldn't find that page."), 404
+
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+    # e.g. sending GET to an address that only accepts POST.
+    # Flask's own response is kept so it includes the "Allow" header listing the accepted methods
+    if request.path.startswith("/api/"):
+        response = error.get_response()
+        response.data = jsonify({"error": "That method isn't allowed here."}).get_data()
+        response.content_type = "application/json"
+        return response
+    return error
+
+
+@app.errorhandler(500)
+def server_error(error):
+    # An unexpected crash. Keep the details private and send a plain message instead
+    if request.path.startswith("/api/"):
+        return api_error("Something went wrong on our end. Please try again.", 500)
+    return render_template("error.html", message="Something went wrong on our end. Please try again."), 500
 
 
 @app.route("/stripe/webhook", methods=["POST"])

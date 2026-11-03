@@ -39,7 +39,7 @@ def send_webhook(client, monkeypatch):
 @pytest.fixture
 def unpaid_order(place_order, price_id, latest_order):
     # An order that went to Stripe but whose customer never came back to the confirmation page
-    place_order(name="Closed The Tab", **{f"qty_{price_id('002')}": "1"})
+    place_order(name="Closed The Tab", items=[(price_id("002"), 1)])
     return latest_order()
 
 

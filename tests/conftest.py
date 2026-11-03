@@ -120,11 +120,14 @@ def price_id(query):
 
 @pytest.fixture
 def place_order(client):
-    # Submit the order form and return the response
-    def submit(name="Test Customer", phone="630-555-1234", **quantities):
-        data = {"name": name, "phone": phone}
-        data.update(quantities)
-        return client.post("/order", data=data)
+    # Send an order to the API the way the React app will, e.g. items=[(price_id, quantity), ...]
+    def submit(name="Test Customer", phone="630-555-1234", items=()):
+        body = {
+            "name": name,
+            "phone": phone,
+            "items": [{"price_id": price, "quantity": quantity} for price, quantity in items],
+        }
+        return client.post("/api/orders", json=body)
     return submit
 
 
@@ -133,13 +136,13 @@ def latest_order(query):
     # The most recently placed order's token and Stripe session id
     def find():
         token, session_id = query("SELECT public_token, stripe_session_id FROM orders ORDER BY id DESC LIMIT 1")[0]
-        return SimpleNamespace(token=token, session_id=session_id, link=f"/order/{token}")
+        return SimpleNamespace(token=token, session_id=session_id, link=f"/api/orders/{token}")
     return find
 
 
 @pytest.fixture
 def place_paid_order(client, place_order, fake_stripe, latest_order):
-    # Place an order, pay for it on (fake) Stripe, then land back on the confirmation page,
+    # Place an order, pay for it on (fake) Stripe, then load the order like the confirmation page does,
     # which is when the app checks with Stripe and marks the order paid
     def submit(**kwargs):
         place_order(**kwargs)
