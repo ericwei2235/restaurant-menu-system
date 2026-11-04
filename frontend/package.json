@@ -20,5 +20,8 @@
     "@vitejs/plugin-react": "^6.1.2",
     "oxlint": "^1.89.0",
     "vite": "^8.3.5"
+  },
+  "engines": {
+    "node": ">=22.22.0 <25"
   }
 }

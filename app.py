@@ -1,5 +1,7 @@
-from flask import Flask, jsonify, request, session
+from flask import Flask, jsonify, request, send_from_directory, session
+from werkzeug.exceptions import NotFound
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.routing import BaseConverter
 from datetime import timedelta
 from functools import wraps
 from urllib.parse import urlparse
@@ -10,7 +12,8 @@ import sqlite3
 import stripe
 
 
-app = Flask(__name__)
+# static_folder=None turns off Flask's built-in /static/ folder; the React build is served below instead
+app = Flask(__name__, static_folder=None)
 
 # On Render, a proxy handles HTTPS and passes requests to the app over plain HTTP.
 # This trusts the proxy's X-Forwarded-Proto header, so links the app builds for Stripe start with https://
@@ -39,6 +42,13 @@ MIN_SECRET_KEY_LENGTH = 32
 # so the app finds restaurant.db no matter where it's launched from
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE = os.path.join(BASE_DIR, "restaurant.db")
+
+# Where "npm run build" puts the finished React app (index.html, plus JavaScript and CSS in assets/)
+FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
+
+# Files in assets/ have a fingerprint in their name (e.g. index-BlUL915k.js) that changes whenever
+# their contents change, so browsers can safely keep them for a year without re-downloading
+ASSET_CACHE_SECONDS = 365 * 24 * 60 * 60
 
 # Limits for order form input, checked on the server since HTML limits can be bypassed
 MAX_QUANTITY = 20
@@ -362,12 +372,50 @@ def api_get_order(token):
     })
 
 
+# ---------- React app ----------
+
+class FrontendPathConverter(BaseConverter):
+    # Matches any address EXCEPT ones under /api/ or /stripe/, which belong to the backend.
+    # Without this, the catch-all route below would also grab backend addresses: a GET to a
+    # POST-only API address would get the React page instead of a proper 405 JSON error
+    regex = r"(?!api(?:/|$)|stripe(?:/|$)).*"
+    # Lets the match include slashes, e.g. order/abc123
+    part_isolating = False
+
+
+app.url_map.converters["frontend_path"] = FrontendPathConverter
+
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<frontend_path:path>")
+def frontend(path):
+    index_path = os.path.join(FRONTEND_DIST, "index.html")
+    if not os.path.isfile(index_path):
+        # The React app hasn't been built on this machine yet
+        return "The frontend hasn't been built. Run \"npm run build\" in the frontend folder.", 503
+
+    # A real file from the build (JavaScript, CSS, the icon): send it.
+    # send_from_directory refuses paths that try to escape the folder, like ../app.py
+    if path:
+        try:
+            max_age = ASSET_CACHE_SECONDS if path.startswith("assets/") else None
+            return send_from_directory(FRONTEND_DIST, path, max_age=max_age)
+        except NotFound:
+            pass
+
+    # Any other address is a page (/, /order/..., /admin, or a typo): send index.html and let
+    # React Router show the right page, including its own "not found" page. With no max_age,
+    # Flask marks it "no-cache", so browsers check for a newer version each visit and see
+    # updates right after a deploy
+    return send_from_directory(FRONTEND_DIST, "index.html")
+
+
 # ---------- API errors ----------
 
 @app.errorhandler(404)
 def not_found(error):
-    # Unknown /api/... addresses get a JSON error like every other API response
-    # Other addresses keep Flask's default page for now; they'll show the React app later
+    # Unknown /api/... addresses get a JSON error like every other API response.
+    # (Page addresses never get here: the React app route above answers all of them)
     if request.path.startswith("/api/"):
         return api_error("Not found.", 404)
     return error
