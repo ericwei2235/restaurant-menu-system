@@ -1,4 +1,5 @@
 import { Link, Route, Routes } from 'react-router'
+import AdminPage from './pages/AdminPage.jsx'
 import MenuPage from './pages/MenuPage.jsx'
 import NotFoundPage from './pages/NotFoundPage.jsx'
 import OrderPage from './pages/OrderPage.jsx'
@@ -27,8 +28,8 @@ function App() {
           <Route path="/" element={<MenuPage />} />
           {/* Stripe sends customers back here after paying or cancelling */}
           <Route path="/order/:token" element={<OrderPage />} />
-          {/* The admin page is built in the next step */}
-          <Route path="/admin" element={<p>The admin page is coming soon.</p>} />
+          {/* Staff login and the order dashboard */}
+          <Route path="/admin" element={<AdminPage />} />
           {/* "*" matches any address not listed above */}
           <Route path="*" element={<NotFoundPage />} />
         </Routes>

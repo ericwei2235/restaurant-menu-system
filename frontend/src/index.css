@@ -268,6 +268,52 @@ form {
 
 /* ---------- Admin page ---------- */
 
+.admin-login {
+    max-width: 360px;
+    margin: 0 auto;
+}
+
+.admin-login .field input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.notice {
+    background-color: #fff1c2;
+    border: 1px solid #e6cf7a;
+    color: #6b5420;
+    padding: 8px 12px;
+    border-radius: 6px;
+}
+
+/* Who's logged in, when the list last refreshed, and the logout button */
+.admin-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.updated {
+    color: #6b5a5a;
+    font-size: 0.9em;
+}
+
+/* A quieter outlined button for less important actions */
+.secondary-button {
+    background-color: transparent;
+    color: #b3272d;
+    border: 1px solid #b3272d;
+    padding: 6px 14px;
+    font-size: 0.9em;
+}
+
+.secondary-button:hover {
+    background-color: #f6e4e4;
+}
+
 .order-card {
     background-color: #fffaf3;
     border-left: 4px solid #b3272d;
